@@ -1,0 +1,131 @@
+name: Reply to OCR review threads from a Teleport Beam
+
+on:
+  pull_request_review_comment:
+    types: [created]
+
+concurrency:
+  group: ocr-reply-${{ github.event.comment.in_reply_to_id || github.event.comment.id }}
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+env:
+  TELEPORT_PROXY_ADDR: square-lake.beams.sh:443
+  TELEPORT_JOIN_TOKEN: ocr-reviewer
+  TSH_VERSION: 18.11.10
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  reply:
+    if: >-
+      github.event.comment.in_reply_to_id &&
+      github.event.comment.user.type != 'Bot' &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
+      !github.event.pull_request.head.repo.fork
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: src
+          persist-credentials: false
+
+      - name: Build prompt from thread
+        id: thread
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            return await require(`${process.env.GITHUB_WORKSPACE}/src/.github/ocr-reply/build-prompt.js`)({ github, context, core, fs });
+
+      - uses: teleport-actions/setup@v2
+        if: steps.thread.outputs.result == 'true'
+        with:
+          version: ${{ env.TSH_VERSION }}
+
+      # See ocr-review.yml: released tbot can't handle direct role assignment.
+      - name: Install committed tbot
+        if: steps.thread.outputs.result == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/tbot"
+          gunzip -c src/bin/tbot.gz > "$RUNNER_TEMP/tbot/tbot"
+          chmod +x "$RUNNER_TEMP/tbot/tbot"
+          echo "$RUNNER_TEMP/tbot" >> "$GITHUB_PATH"
+
+      - uses: teleport-actions/auth@v2
+        if: steps.thread.outputs.result == 'true'
+        with:
+          proxy: ${{ env.TELEPORT_PROXY_ADDR }}
+          token: ${{ env.TELEPORT_JOIN_TOKEN }}
+          certificate-ttl: 1h
+          allow-reissue: true
+
+      - name: Create beam
+        if: steps.thread.outputs.result == 'true'
+        run: |
+          tsh beams add --no-console --roles=beam-user --no-share-connected-accounts -f json | tee beam.json
+          beam=$(jq -er '.uuid // .id' beam.json)
+          echo "BEAM=$beam" >> "$GITHUB_ENV"
+          # The beam's SSH node can take a few seconds to register after creation.
+          for i in $(seq 30); do
+            tsh beams exec "$beam" true 2>/dev/null && exit 0
+            sleep 2
+          done
+          echo "beam $beam never became reachable" >&2
+          exit 1
+
+      - name: Copy checkout and prompt into beam
+        if: steps.thread.outputs.result == 'true'
+        run: |
+          cp src/.github/ocr-reply/run.sh reply/
+          tar -C src --exclude=./bin --exclude=./.git -czf src.tgz .
+          tar -czf reply.tgz reply
+          tsh beams scp src.tgz "$BEAM:/tmp/src.tgz"
+          tsh beams scp reply.tgz "$BEAM:/tmp/reply.tgz"
+          tsh beams exec "$BEAM" 'mkdir -p ~/work && tar -C ~/work -xzf /tmp/src.tgz && tar -C ~ -xzf /tmp/reply.tgz'
+
+      - name: Run Claude in beam
+        if: steps.thread.outputs.result == 'true'
+        run: |
+          tsh beams exec "$BEAM" "bash -lc '~/reply/run.sh'" || status=$?
+          tsh beams scp "$BEAM:/home/beams/reply/claude-stderr.log" reply/ && cat reply/claude-stderr.log
+          tsh beams scp "$BEAM:/home/beams/reply/claude.json" reply/
+          exit "${status:-0}"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && env.BEAM != '' }}
+        with:
+          name: ocr-reply-logs
+          path: reply/
+          if-no-files-found: warn
+
+      - name: Post reply
+        if: steps.thread.outputs.result == 'true'
+        uses: actions/github-script@v7
+        env:
+          ROOT_ID: ${{ steps.thread.outputs.root_id }}
+        with:
+          script: |
+            const fs = require('fs');
+            const out = JSON.parse(fs.readFileSync('reply/claude.json', 'utf8'));
+            if (out.is_error || !out.result?.trim()) {
+              core.setFailed(`Claude returned no reply: ${out.subtype ?? 'unknown'}`);
+              return;
+            }
+            await github.rest.pulls.createReplyForReviewComment({
+              ...context.repo,
+              pull_number: context.payload.pull_request.number,
+              comment_id: Number(process.env.ROOT_ID),
+              body: `<!-- ocr-reply -->\n${out.result.trim()}`,
+            });
+
+      - name: Delete beam
+        if: ${{ always() && env.BEAM != '' }}
+        run: tsh beams rm "$BEAM"
