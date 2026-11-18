@@ -10,5 +10,7 @@ spec:
     allow:
       - repository: strideynet/beams-open-code-review
         event_name: pull_request
+        actor: strideynet
       - repository: strideynet/beams-open-code-review
         event_name: pull_request_review_comment
+        actor: strideynet
