@@ -1,0 +1,104 @@
+name: OCR review in a Teleport Beam
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: ocr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+env:
+  TELEPORT_PROXY_ADDR: wild-moon.beams.sh:443
+  TELEPORT_JOIN_TOKEN: ocr-reviewer
+  TSH_VERSION: 18.11.10
+  OCR_VERSION: v1.13.12
+  OCR_MODEL: ${{ vars.OCR_MODEL || 'claude-opus-5-5' }}
+
+jobs:
+  review:
+    if: ${{ !github.event.pull_request.draft && !github.event.pull_request.head.repo.fork }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          path: src
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          repository: alibaba/open-code-review
+          ref: ${{ env.OCR_VERSION }}
+          path: ocr
+          sparse-checkout: scripts/github-actions
+          persist-credentials: false
+
+      - uses: teleport-actions/setup@v2
+        with:
+          version: ${{ env.TSH_VERSION }}
+
+      - uses: teleport-actions/auth@v2
+        with:
+          proxy: ${{ env.TELEPORT_PROXY_ADDR }}
+          token: ${{ env.TELEPORT_JOIN_TOKEN }}
+          certificate-ttl: 1h
+
+      - name: Create beam
+        run: |
+          tsh beams add --console=false --roles=beam-user --no-share-connected-accounts -f json | tee beam.json
+          echo "BEAM=$(jq -r '.uuid // .id // .metadata.name' beam.json)" >> "$GITHUB_ENV"
+
+      - name: Copy PR checkout into beam
+        run: |
+          tar -C src -czf src.tgz .
+          tsh beams scp src.tgz "$BEAM:/tmp/src.tgz"
+          tsh beams exec "$BEAM" 'mkdir -p ~/work && tar -C ~/work -xzf /tmp/src.tgz'
+
+      - name: Install OCR in beam
+        run: |
+          tsh beams exec "$BEAM" "git --version && curl -fsSL https://raw.githubusercontent.com/alibaba/open-code-review/$OCR_VERSION/install.sh | OCR_VERSION=$OCR_VERSION OCR_INSTALL_DIR=\$HOME/.local/bin sh"
+
+      - name: Run OCR in beam
+        env:
+          MERGE_BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # The beam proxy injects the real API key; OCR only needs a non-empty token.
+          tsh beams exec "$BEAM" "bash -lc 'cd ~/work && ANTHROPIC_AUTH_TOKEN=unused ANTHROPIC_MODEL=$OCR_MODEL ~/.local/bin/ocr review --from $MERGE_BASE --to $HEAD_SHA --audience agent --format json > /tmp/ocr-result.json 2> /tmp/ocr-stderr.log'" || status=$?
+          tsh beams scp "$BEAM:/tmp/ocr-result.json" /tmp/ocr-result.json
+          tsh beams scp "$BEAM:/tmp/ocr-stderr.log" /tmp/ocr-stderr.log
+          cat /tmp/ocr-stderr.log
+          exit "${status:-0}"
+
+      - name: Post review comments
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const { runPostReviewComments } = require(`${process.env.GITHUB_WORKSPACE}/ocr/scripts/github-actions/post-review-comments.js`);
+            await runPostReviewComments({
+              github, context, core, fs,
+              prNumber: context.issue.number,
+              resultPath: '/tmp/ocr-result.json',
+              stderrPath: '/tmp/ocr-stderr.log',
+              stickySummary: true,
+              incremental: false,
+              incrementalOverlapThreshold: 0.6,
+              reviewCommentBatchSize: 50,
+              routeSeverityBelow: '',
+              routeCategories: '',
+              checkpointEnabled: false,
+              resolveOutdated: 'false',
+            });
+
+      - name: Delete beam
+        if: ${{ always() && env.BEAM != '' }}
+        run: tsh beams rm "$BEAM"
