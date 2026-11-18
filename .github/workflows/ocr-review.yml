@@ -14,7 +14,7 @@ permissions:
   id-token: write
 
 env:
-  TELEPORT_PROXY_ADDR: wild-moon.beams.sh:443
+  TELEPORT_PROXY_ADDR: square-lake.beams.sh:443
   TELEPORT_JOIN_TOKEN: ocr-reviewer
   TSH_VERSION: 18.11.10
   OCR_VERSION: v1.13.12
