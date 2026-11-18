@@ -45,11 +45,22 @@ jobs:
         with:
           version: ${{ env.TSH_VERSION }}
 
+      # Released tbot can't issue certs for direct-role-assignment bots, so
+      # shadow it with tbot built from the tenant's version (bin/README.md).
+      - name: Install committed tbot
+        run: |
+          mkdir -p "$RUNNER_TEMP/tbot"
+          gunzip -c src/bin/tbot.gz > "$RUNNER_TEMP/tbot/tbot"
+          chmod +x "$RUNNER_TEMP/tbot/tbot"
+          echo "$RUNNER_TEMP/tbot" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/tbot/tbot" version
+
       - uses: teleport-actions/auth@v2
         with:
           proxy: ${{ env.TELEPORT_PROXY_ADDR }}
           token: ${{ env.TELEPORT_JOIN_TOKEN }}
           certificate-ttl: 1h
+          allow-reissue: true
 
       - name: Create beam
         run: |
@@ -58,7 +69,7 @@ jobs:
 
       - name: Copy PR checkout into beam
         run: |
-          tar -C src -czf src.tgz .
+          tar -C src --exclude=./bin -czf src.tgz .
           tsh beams scp src.tgz "$BEAM:/tmp/src.tgz"
           tsh beams exec "$BEAM" 'mkdir -p ~/work && tar -C ~/work -xzf /tmp/src.tgz'
 
