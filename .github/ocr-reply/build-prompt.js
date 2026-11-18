@@ -7,7 +7,7 @@ module.exports = async ({ github, context, core, fs }) => {
 
   const all = await github.paginate(github.rest.pulls.listReviewComments, { owner, repo, pull_number, per_page: 100 });
   const root = all.find(c => c.id === comment.in_reply_to_id);
-  if (!root || !root.body.includes('<!-- ocr-')) {
+  if (!root || !/<!-- ocr-\d+-/.test(root.body)) {
     core.info('Not a reply to an OpenCodeReview comment, skipping.');
     return false;
   }
