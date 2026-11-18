@@ -20,6 +20,10 @@ env:
   OCR_VERSION: v1.13.12
   OCR_MODEL: ${{ vars.OCR_MODEL || 'claude-opus-5-5' }}
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   review:
     if: ${{ !github.event.pull_request.draft && !github.event.pull_request.head.repo.fork }}
@@ -64,7 +68,7 @@ jobs:
 
       - name: Create beam
         run: |
-          tsh beams add --console=false --roles=beam-user --no-share-connected-accounts -f json | tee beam.json
+          tsh beams add --no-console --roles=beam-user --no-share-connected-accounts -f json | tee beam.json
           echo "BEAM=$(jq -r '.uuid // .id // .metadata.name' beam.json)" >> "$GITHUB_ENV"
 
       - name: Copy PR checkout into beam
