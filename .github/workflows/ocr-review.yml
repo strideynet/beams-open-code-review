@@ -69,7 +69,8 @@ jobs:
       - name: Create beam
         run: |
           tsh beams add --no-console --roles=beam-user --no-share-connected-accounts -f json | tee beam.json
-          echo "BEAM=$(jq -er '.uuid // .id' beam.json)" >> "$GITHUB_ENV"
+          beam=$(jq -er '.uuid // .id' beam.json)
+          echo "BEAM=$beam" >> "$GITHUB_ENV"
 
       - name: Copy PR checkout into beam
         run: |
