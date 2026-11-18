@@ -1,0 +1,9 @@
+kind: bot
+version: v1
+metadata:
+  name: ocr-reviewer
+spec:
+  roles: [beam-user]
+  # Beam creation delegates from the creator's standing roles, which for an
+  # impersonating bot would only be bot-ocr-reviewer.
+  direct_unscoped_role_assignment: true

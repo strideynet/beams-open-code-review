@@ -1,0 +1,12 @@
+kind: token
+version: v2
+metadata:
+  name: ocr-reviewer
+spec:
+  roles: [Bot]
+  bot_name: ocr-reviewer
+  join_method: github
+  github:
+    allow:
+      - repository: strideynet/beams-open-code-review
+        event_name: pull_request
