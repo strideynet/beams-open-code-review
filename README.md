@@ -60,3 +60,22 @@ Optionally set the `OCR_MODEL` repository variable to pick the model.
 Fork PRs are skipped: they get no OIDC token, so the bot cannot join.
 
 `bin/tbot.gz` is a temporary prebuilt tbot, see [bin/README.md](bin/README.md).
+
+## Extra feature: discuss a review comment
+
+Reply to any OpenCodeReview inline comment and Claude answers in the thread.
+`.github/workflows/ocr-reply.yml` runs on `pull_request_review_comment`, with
+the same split as the review:
+
+1. The runner checks that the reply is to an OCR thread and comes from an
+   owner, member or collaborator, then builds a prompt from the whole thread
+   and the diff hunk (`.github/ocr-reply/build-prompt.js`).
+2. A fresh beam gets the PR checkout and the prompt. `claude -p` runs there
+   with read-only tools (`Read`, `Grep`, `Glob`) against the beam's inference
+   endpoint (`.github/ocr-reply/run.sh`).
+3. The runner copies Claude's answer out, posts it as a reply with its own
+   `GITHUB_TOKEN`, uploads the `ocr-reply-logs` artifact and deletes the beam.
+
+Each reply is stateless: the thread is the conversation history, so nothing
+persists between replies. The join token in `teleport/token.yaml` allows the
+`pull_request_review_comment` event as well as `pull_request`.
