@@ -94,6 +94,21 @@ jobs:
           tsh beams scp "$BEAM:/tmp/ocr-result.json" /tmp/ocr-result.json
           exit "${status:-0}"
 
+      - name: Collect OCR logs from beam
+        if: ${{ always() && env.BEAM != '' }}
+        run: |
+          mkdir -p ocr-logs
+          cp beam.json /tmp/ocr-result.json /tmp/ocr-stderr.log ocr-logs/ 2>/dev/null || true
+          tsh beams exec "$BEAM" 'tar -C ~ -czf /tmp/ocr-sessions.tgz --exclude=.opencodereview/auth .opencodereview' &&
+            tsh beams scp "$BEAM:/tmp/ocr-sessions.tgz" ocr-logs/ocr-sessions.tgz
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && env.BEAM != '' }}
+        with:
+          name: ocr-logs
+          path: ocr-logs/
+          if-no-files-found: warn
+
       - name: Post review comments
         uses: actions/github-script@v7
         with:
