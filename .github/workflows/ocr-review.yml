@@ -69,7 +69,7 @@ jobs:
       - name: Create beam
         run: |
           tsh beams add --no-console --roles=beam-user --no-share-connected-accounts -f json | tee beam.json
-          echo "BEAM=$(jq -r '.uuid // .id // .metadata.name' beam.json)" >> "$GITHUB_ENV"
+          echo "BEAM=$(jq -er '.uuid // .id' beam.json)" >> "$GITHUB_ENV"
 
       - name: Copy PR checkout into beam
         run: |
@@ -83,14 +83,14 @@ jobs:
 
       - name: Run OCR in beam
         env:
-          MERGE_BASE: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          MERGE_BASE=$(git -C src merge-base "$BASE_SHA" "$HEAD_SHA")
           # The beam proxy injects the real API key; OCR only needs a non-empty token.
           tsh beams exec "$BEAM" "bash -lc 'cd ~/work && ANTHROPIC_AUTH_TOKEN=unused ANTHROPIC_MODEL=$OCR_MODEL ~/.local/bin/ocr review --from $MERGE_BASE --to $HEAD_SHA --audience agent --format json > /tmp/ocr-result.json 2> /tmp/ocr-stderr.log'" || status=$?
+          tsh beams scp "$BEAM:/tmp/ocr-stderr.log" /tmp/ocr-stderr.log && cat /tmp/ocr-stderr.log
           tsh beams scp "$BEAM:/tmp/ocr-result.json" /tmp/ocr-result.json
-          tsh beams scp "$BEAM:/tmp/ocr-stderr.log" /tmp/ocr-stderr.log
-          cat /tmp/ocr-stderr.log
           exit "${status:-0}"
 
       - name: Post review comments
